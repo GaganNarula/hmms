@@ -1,19 +1,19 @@
 
 
-def forward_recursion_rescaled(y, K, emission_logprobs, params):
+def forward_recursion_rescaled(y, K, emission_logprob, params):
     ''' Perform filtering given an observed sequence y. 
-        Filtering returns terms of the form P(z_t | y_t)
+        Filtering returns terms of the form P(z_t | y_{1:t})
         where z_t is the hidden discrete state at time t
         
-        Params:
-        ------
+        Parameters
+        ----------
             y : numpy ndarray, observed sequence, size [timesteps, num_features]
             K : int , number of hidden states
             emission_logprobs : function that computes log likelihoods
                                 for the sequence y at each time step P(y_t | z_t)
             params : dict, containing parameters for HMM   
             
-        Returns:
+        Returns
         -------
             alphahat : numpy array, estimate of P(z_t | y_t) for all t
                         in the sequence
@@ -21,7 +21,7 @@ def forward_recursion_rescaled(y, K, emission_logprobs, params):
                                 
     '''
     # log emission probabilities
-    logPe = emission_logprobs(y)
+    logPe = emission_logprob(y)
     # num timesteps
     T = y.shape[0]
     # alphahat is the filtering distribution P(z_t | x_t)
