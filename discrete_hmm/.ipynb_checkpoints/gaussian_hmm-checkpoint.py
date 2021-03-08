@@ -6,13 +6,21 @@ from hmms.base.smooth import back
 
 class GaussianHMM(BaseHMM):
     ''' HMM with multivariate Gaussian emissions
-    
+        Parameters
+        ----------
+            - nstates : int, number of hidden states
+            - init_kmeans : bool, whether to initialize means 
+                            and covariances using k-means. Default
+                            false. False = initialize with dirichlet
+                            prior
+            - transmat_
+                            
     '''
     def __init__(nstates, 
                 fit_params = 'stmc', 
                 init_kmeans = False,
-                transmat_dirichlet_prior = 1.,
-                startprob_dirichlet_prior = 1.,
+                transmat_dirichlet_conc = 1.,
+                startprob_dirichlet_conc = 1.,
                 verbose = False,
                 n_ters = 50):
         self.nstates = nstates # num hidden states
@@ -25,11 +33,11 @@ class GaussianHMM(BaseHMM):
         # covariance matrices, one for each state
         self.covars = None
         # transition matrix (nstates , nstates)
-        self.transmat = np.random.dirichlet(transmat_dirichlet_prior 
+        self.transmat = np.random.dirichlet(transmat_dirichlet_conc 
                                             * np.ones(nstates), 
                                             size = nstates)
         # starting state probability vector (nstates, 1)
-        self.startprob = np.random.dirichlet(transmat_dirichlet_prior 
+        self.startprob = np.random.dirichlet(startprob_dirichlet_conc 
                                             * np.ones(nstates), 
                                             size = 1)
     
@@ -100,25 +108,21 @@ class GaussianHMM(BaseHMM):
                 posterior_type : if "filter", only 
             Returns
             ----------
-                P_x_y : posterior distribution over all states.   
+                posterior distribution over all states in sequence.   
         '''
         # first run the forward
         # alpha_hat are filtered posteriors at each step
         alpha_hat, c = forward_recursion_rescaled(y, self.nstates, 
                                                   self.emission_logprob, 
                                                   self.get_params())
-        
         if posterior_type == "filter":
             return alpha_hat
-        
         # backward recursion
         beta_hat = backward_recursion_rescaled(y, c, self.nstates, 
                                                self.emission_logprob, 
                                                self.get_params())
-        
         # compute smoothed posterior 
-        P_x_y = alpha_hat * beta_hat
-        return P_x_y
+        return alpha_hat * beta_hat
     
     def loglikelihood(self, y):
         '''
@@ -211,8 +215,8 @@ class GaussianHMM(BaseHMM):
             ----------
                 y : numpy array, (timesteps, nfeatures) single 
                     observation sequence
-                log_every : if verbose = True, every log_every iterations
-                            print log likelihood
+                log_every : if self.verbose = True, every log_every
+                            iterations print log likelihood
         '''
         self.nfeats = y.shape[1]
         if self.init_kmeans:
@@ -222,7 +226,7 @@ class GaussianHMM(BaseHMM):
         # each iteration do M and E steps   
         for n in range(self.n_iters):
             _, _, gamma, sigma, c = self.E_step(y)
-            self.M_step(x, gamma, sigma)
+            self.M_step(y, gamma, sigma)
             marginal_LL = np.log(c).sum()
             
             if self.verbose and n % log_every == 0:
