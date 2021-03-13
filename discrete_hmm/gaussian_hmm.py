@@ -16,34 +16,42 @@ class GaussianHMM(BaseHMM):
             - transmat_
                             
     '''
-    def __init__(nstates, 
+    def __init__(nstates, nfeatures,
                 fit_params = 'stmc', 
                 init_kmeans = False,
                 transmat_dirichlet_conc = 1.,
                 startprob_dirichlet_conc = 1.,
                 verbose = False,
-                n_ters = 50):
+                n_iters = 50):
         self.nstates = nstates # num hidden states
-        self.nfeats = None
+        self.D = nfeatures # dimensionality of observation, shorthand
+        self.nfeatures = nfeatures
+        self.n_iters = n_iters # number of EM iterations
+        self.do_kmeans = do_kmeans # whether to initialize with kmeans
+        # character string e.g. 's' only start probability is updated
+        # default = 'stmc' means start, transmat, means and covs
+        self.learn_params = learn_params # lea
+        self.estimate_type = estimate_type
         self.verbose = verbose
-        self.n_iters = n_iters
-        self.fit_params = fit_params
-        # gaussian means, one for each state
-        self.means = None
-        # covariance matrices, one for each state
-        self.covars = None
-        # transition matrix (nstates , nstates)
-        self.transmat = np.random.dirichlet(transmat_dirichlet_conc 
-                                            * np.ones(nstates), 
-                                            size = nstates)
-        # starting state probability vector (nstates, 1)
-        self.startprob = np.random.dirichlet(startprob_dirichlet_conc 
-                                            * np.ones(nstates), 
-                                            size = 1)
+        self.tolerance = tolerance
+        if self.estimate_type == 'ML':
+            self.startprob_prior_conc = np.ones(self.nstates)
+            self.transmat_prior_conc = np.ones(self.nstates)
+        else:
+            self.transmat_prior_conc = transmat_prior_conc_weight*np.ones(self.nstates)
+            self.startprob_prior_conc = startprob_prior_conc_weight*np.ones(self.nstates)
+            
+        self.prior_mean = mean_prior*np.ones(nfeatures)
+        self.covar_prior = covar_prior_weight*np.eye(nfeatures)
+        # intialize randomly
+        self.transmat = np.random.dirichlet(self.transmat_prior_conc, size = K)
+        self.startprob = np.random.dirichlet(self.startprob_prior_conc)
+        self.means = multivariate_normal.rvs(size = K, mean = self.prior_mean, cov= np.eye(D))
+        self.covs = invwishart.rvs(D+2, self.covar_prior, size = K)
     
     def get_params(self):
         P = {'means':self.means, 
-             'covars':self.covars,
+             'covars':self.covs,
              'transmat':self.transmat,
              'startprob':self.startprob}
         return P
@@ -73,30 +81,6 @@ class GaussianHMM(BaseHMM):
         for t in range(y.shape[0]):
             for k in range(self.nstates):
                 self.emission_logP[t,k] = self.log_gaussian_pdf(x[t], k)
-    
-    def _sample_multinomial_index(self, P, n = 1):
-        z = np.random.multinomial(n, P)
-        return np.where(z == 1)[0][0]
-    
-    def _sample_Gauss_emission(self, k):
-        return multivariate_normal.rvs(size = 1, mean = self.means[k], cov= self.covars[k])
-    
-    def sample(self, tsteps = 100):
-        ''' Generate samples from this HMM 
-        '''
-        states = np.zeros(tsteps, dtype = 'int32')
-        emissions = np.zeros((tsteps, self.nfeats))
-        for t in range(tsteps):
-            if t == 0:
-                # start state
-                x = self._sample_multinomial_index(self.startprob)
-            else:
-                # sample from transmat
-                x = self._sample_multinomial_index(self.transmat[states[t-1],:])
-            states[t] = x
-            # sample emission
-            emissions[t] = self._sample_Gauss_emission(x)
-        return states, emissions
                 
     def posterior_distr(self, y, posterior_type = "filter"):
         ''' Given a sequence y, infer P(x_t | y). 
@@ -166,70 +150,131 @@ class GaussianHMM(BaseHMM):
         return sigma_matrix
     
     def E_step(self, y):
-        ''' Take expectation step '''
-        alphahat, c = self.forward_recursion_rescaled(y)
-        betahat = self.backward_recursion_rescaled(y, c)
+        ''' Take expectation step for a sequence y
+        '''
+        alphahat, c = forward_recursion_rescaled(y, self.nstates, 
+                                                  self.emission_logprob, 
+                                                  self.get_params())
+        betahat = backward_recursion_rescaled(y, c)
+        # Posterior P(z_t | y)
         gamma = self.compute_gamma(alphahat, betahat)
+        # Posterior pairwise P(z_t ,z_{t-1} | y)
         sigma = self.compute_sigma(alphahat, betahat, c)
         return alphahat, betahat, gamma, sigma, c
     
-    def M_step(self, y, gamma, sigma):
-        # update start prob
-        if 's' in self.fit_params:
-            self.startprob = gamma[0] / gamma[0].sum()
-        # update transition matrix
-        if 't' in self.fit_params:
-            for k in range(self.nstates):
-                for j in range(self.nstates):
-                    num = sigma[:,k,j].sum() 
-                    denom = sigma[:,k,:].sum()
-                    self.transmat[k,j] = num / denom
-        # update emission params
-        self.update_emission(y, gamma)
+    def _update_mean_stats(self, y, gamma):
+        ''' mean update statistics '''
+        M = []
+        for k in range(self.nstates):
+            mu = np.tile(gamma[:,k].reshape(-1,1),(1,self.D)) \
+                    *(y + np.tile(self.prior_mean.reshape(1,-1),(len(y),1)))
+            M.append(mu.sum(axis=0))
+        return np.stack(M)
+    
+    def _update_cov_stats(self, y, gamma):
+        ''' covariance update statistics '''
+        stats = []
+        T = len(y)
+        for k in range(self.nstates):
+            S = [(np.outer(y[t] - self.means[k],y[t] - self.means[k]) \
+                 + self.covar_prior)*gamma[t,k] for t in range(T)]
+            S = np.stack(S,axis=0).sum(axis=0)
+            stats.append(S)
+        return np.stack(stats)
         
-    def update_emission(self, y, gamma):
-        ''' Update emission parameters '''
-        T = y.shape[0]
-        self.means_old = np.ones_like(self.means)*self.means
-        # update means
-        if 'm' in self.fit_params:
-            for k in range(self.nstates):
-                for t in range(T):
-                    self.means[k] += gamma[t,k] * y[t]
-                denom = gamma[:,k].sum()
-                self.means[k] /= denom
-        # update covariances
-        if 'c' in self.fit_params:
-            for k in range(self.nstates):
-                S = [np.outer(y[t] - self.means[k],
-                              y[t] - self.means[k]) for t in range(T)]
-                S = np.stack(S)
-                for t in range(T):
-                    self.covars[k] += gamma[t,k] * S[t]
-                denom = gamma[:,k].sum()
-                self.covars[k] /= denom
-                    
-    def fit(self, y, log_every = 10):
+    def _accumulate_stats(self, stats, y, gamma):
+        # sum over sequences, shape [nstates, nstates]
+        stats['A'] += np.sum(sigma,axis=0).squeeze() 
+        stats['pi'] += gamma[0] # only initial needed
+        # for means, multiply each y_t by gamma
+        # and add to last sequence
+        stats['gammad'] += gamma.sum(axis=0) # for denom
+        stats['mu'] += self._update_mean_stats(y, gamma) 
+        # for covs
+        stats['cov'] += self._update_cov_stats(y, gamma)
+        return stats
+    
+    def do_Mstep_many_sequences(self, stats):
+        ''' M-step for N i.i.d sequences 
+            Parameters
+            ----------
+                stats : dict, sufficient statistics for 
+                        each parameter update
+        '''
+        # update start probability vector
+        if 's' in self.learn_params:
+            self.startprob = self.startprob_prior_conc*stats['pi']
+            # sum over states
+            self.startprob /= np.sum(self.startprob)
+        # update transition matrix, means and covs
+        for k in range(self.nstates):
+            if 't' in self.learn_params:
+                num = self.transmat_prior_conc*stats['A'][k,:] 
+                self.transmat[k,:] = num / num.sum()
+            # for mean
+            if 'm' in self.learn_params:
+                self.means[k] = stats['mu'][k]/stats['gammad'][k]
+            # for covariance
+            if 'c' in self.learn_params:
+                self.covs[k] = stats['cov'][k]/(stats['gammad'][k]*(2*self.D + 4))
+                                
+        
+    def fit(self, seqs, log_every = 10):
         ''' Fit HMM with EM algorithm 
             Parameters
             ----------
-                y : numpy array, (timesteps, nfeatures) single 
-                    observation sequence
+                seqs : list of numpy arrays, Each array has shape
+                        (timesteps, nfeatures) and is a single 
+                        observation sequence
                 log_every : if self.verbose = True, every log_every
                             iterations print log likelihood
         '''
-        self.nfeats = y.shape[1]
-        if self.init_kmeans:
-            self.init_kmeans_means_and_covs(y)
-        else:
-            self.init_random_means_and_covs(y)
-        # each iteration do M and E steps   
+        if self.do_kmeans:
+            self.initKmeans_means_and_covs(np.concatenate(seqs, axis=0))
+        LLprev = 0.
         for n in range(self.n_iters):
-            _, _, gamma, sigma, c = self.E_step(y)
-            self.M_step(y, gamma, sigma)
-            marginal_LL = np.log(c).sum()
+            stats = self.init_stats()
+            LL = 0.
+            for i, y in enumerate(seqs):
+                # sigma is [T,nstates,nstates] matrix
+                # gamma is [T, nstates] matrix
+                _, _, gamma, sigma, c = self.E_step(y)
+                LL += np.log(c).sum()
+                # accumulate sufficient stats
+                stats = self._accumulate_stats(self, stats, y, gamma)
+            delLL = LL - LLprev
+            LLprev = LL*1.
+            # do one m-step
+            self.do_Mstep_many_sequences(stats)
+            if self.verbose and i%log_every == 0:
+                print('.....iteration %d, total log LL : %.5f, change : %.5f .....'%(n,LL,delLL))
             
-            if self.verbose and n % log_every == 0:
-                print('... Iteration %d , Likelihood = %.5f ...'%(n, marginal_LL))
-        
+            #if n>0 and delLL < self.tolerance:
+            #    print('......stopping early.....')
+            #    break
+                
+    def _sample_multinomial_index(self, P, n = 1):
+        z = np.random.multinomial(n, P)
+        return np.where(z == 1)[0][0]
+    
+    def _sample_Gauss_emission(self, z):
+        return multivariate_normal.rvs(size = 1, mean = self.means[z], cov= self.covs[z])
+    
+    def sample(self, tsteps = 100):
+        ''' Sample sequences from HMM '''
+        states = np.zeros(tsteps, dtype = 'int64')
+        emissions = np.zeros((tsteps, self.D))
+        for t in range(tsteps):
+            if t == 0:
+                # start state
+                z = self._sample_multinomial_index(self.startprob)
+            else:
+                # sample from transmat
+                z = self._sample_multinomial_index(self.transmat[states[t-1],:])
+            states[t] = z
+            # sample emission
+            emissions[t] = self._sample_Gauss_emission(z)
+        return states, emissions
+                    
+    
         

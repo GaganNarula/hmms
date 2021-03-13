@@ -5,13 +5,24 @@ class LinearGaussianHMM(BaseHMM):
     def __init__(self):
         
     def get_params(self):
-        P = {'A': self.A, 'C': self.C, 'Q': self.Q, 'R'}
-    def posterior_distr(self, y):
+        P = {'A': self.A, 
+             'C': self.C, 
+             'Q': self.Q, 
+             'R':self.R}
+        return P
+    
+    def posterior_distr(self, y, posterior_type = 'filter'):
         ''' 
             Posterior mean and variance of the latent
             Gaussian state is computed.
         '''
-        kalman_smoother(x, self.get_params())
+        if posterior_type == 'filter':
+            mu, V, _, _, _ = kalman_filter(y, self.get_params())
+        return kalman_smoother(x, self.get_params())
+    
+    def loglikelihood(self, y):
+        _, _, _, _, c = kalman_filter(y, self.get_params())
+        return np.log(c).sum()
     
     def fit(self, y):
         # params is a structure full of parameters
@@ -35,7 +46,7 @@ class LinearGaussianHMM(BaseHMM):
         # Mstep 
 
         # first estimate initial conditions
-        params.mu0 = muhat(:,1); % first time step of smoothed posterior mean
+        params.mu0 = muhat[:,1] # first time step of smoothed posterior mean
         params.V0 = 2*squeeze(paircov_curr(1,:,:)) - 2*muhat(:,1)*muhat(:,1)'; % same for covariance
 
         # with prior
