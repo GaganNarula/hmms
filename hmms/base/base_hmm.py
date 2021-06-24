@@ -22,7 +22,7 @@ class BaseHMM(metaclass=abc.ABCMeta):
         raise NotImplementedError
     
     @abc.abstractmethod
-    def set_params(self):
+    def set_params(self, param_dict):
         '''
         Set parameters
         '''
