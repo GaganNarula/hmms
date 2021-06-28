@@ -35,17 +35,18 @@ def kalman_filter(x, params):
     V = np.zeros((T,p,p)) #% state covariance
     K = np.zeros((T,p,d)) #% Kalman zgain
     c = np.zeros((T,1)) #% normalization constants
+    
     for t in range(T):
-        if t == 1:
-            K[t] = V0 @ (C.T @ np.linalg.inv(C @ (V0 @ C.T) + R));  
-            mu[:,t] = mu0 + K[t]@(x[:,t] - (C@mu0));
-            V[t] = (np.eye(p) - (K[t]@C))@V0 ;
-            P[t] = A@(V[t]@A.T) + Q;
+        
+        if t == 0:
+            K[t] = V0 @ (C.T @ np.linalg.inv(C @ (V0 @ C.T) + R))
+            mu[:,t] = mu0 + K[t]@(x[:,t] - (C@mu0))
+            V[t] = (np.eye(p) - (K[t]@C))@V0 
+            P[t] = A@(V[t]@A.T) + Q
             try:
-                c[t] = mvn.pdf(x[:,t], C@mu0, C@(V0@C.T) + R);
+                c[t] = mvn.pdf(x[:,t], C@mu0, C@(V0@C.T) + R)
             except:
-                break
-            
+                pdb
         else:
             # from David Barber Book
             P[t] = A@V[t-1]@A.T + Q
@@ -87,8 +88,10 @@ def kalman_backward(x, mu, V, P, params):
     muhat = np.zeros((p,T)) #state mean
     Vhat = np.zeros((T,p,p)) #state covariance
     J = np.zeros((T,p,p)) # useful matrix for learning
-    for t in np.arange(T,1,-1):
-        if t == T:
+    
+    for t in np.arange(T-1,-1,-1):
+        
+        if t == T-1:
             muhat[:,t] = mu[:,t]
             Vhat[t] = V[t]
         else:
@@ -100,6 +103,7 @@ def kalman_backward(x, mu, V, P, params):
             
     paircov_prev = np.zeros((T,p,p))
     paircov_curr = np.zeros((T,p,p))
+    
     for t in range(T):
         if t > 0:
             paircov_prev[t] = J[t-1]@Vhat[t] + np.outer(muhat[:,t], muhat[:,t-1])

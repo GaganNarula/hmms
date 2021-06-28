@@ -14,13 +14,16 @@ class LinearGaussianHMM():
         ! Currently works only on one sequence at a time
         
     """
-    def __init__(self, nstates, ndims, init='random', stability_guarantee=False,
-                do_prior=False):
+    def __init__(self, nstates, nobsdims, init='random', stability_guarantee=False,
+                do_prior=False, niters = 10, verbose=True, log_every=1):
         
         self.nstates = nstates
         self.ndims = nobsdims
         self.stability_guarantee = stability_guarantee
         self.do_prior = do_prior
+        self.niters = niters 
+        self.verbose = verbose
+        self.log_every = log_every
         
         # parameter initialization
         if init == 'random':
@@ -44,8 +47,8 @@ class LinearGaussianHMM():
         pass
     
     def _init_params_random(self):
-        self.A = np.matlib.randn(self.nstates, self.nstates)
-        self.C = np.matlib.randn(self.ndims, self.nstates)
+        self.A = np.random.randn(self.nstates, self.nstates)
+        self.C = np.random.randn(self.ndims, self.nstates)
         self.Q = np.eye(self.nstates)
         self.R = np.eye(self.ndims)
         self.mu0 = np.random.normal(0., 1., size=self.nstates)
@@ -55,7 +58,7 @@ class LinearGaussianHMM():
         P = {'A': self.A, 
              'C': self.C, 
              'Q': self.Q, 
-             'R':self.R,
+             'R': self.R,
             'mu0':self.mu0,
             'V0': self.V0}
         return P
@@ -87,10 +90,14 @@ class LinearGaussianHMM():
         # forward and backward pass
         params = self.get_params()
         mu, V, P, _, c = kalman_filter(y, params)
-        return kalman_backward(y, mu, V, P, params), np.log(c).sum()
+        muhat, Vhat, paircov_prev, paircov_curr = kalman_backward(y, mu, V, P, params)
+        logL = np.log(c).sum()
         
+        return muhat, Vhat, paircov_prev, paircov_curr, logL
+    
     def M_step(self, y, muhat, Vhat, paircov_prev, paircov_curr):
         
+        T = y.shape[1] # num time steps
         # first estimate initial conditions
         self.mu0 = muhat[:,0] # first time step of smoothed posterior mean
         self.V0 = 2*paircov_curr[0] - 2*np.outer(muhat[:,0],muhat[:,0]); # same for covariance
@@ -144,7 +151,7 @@ class LinearGaussianHMM():
             Qnew = Qnew / (1/(T-1))
         
         params = {'A':Anew, 'C': Cnew, 'Q': Qnew, 'R': Rnew,
-                 'mu0': mu0, 'V0': V0}
+                 'mu0': self.mu0, 'V0': self.V0}
         
         self.set_params(params)
 
@@ -157,16 +164,28 @@ class LinearGaussianHMM():
         # Estep , compute expected posterior marginal means and covariances
         muhat, Vhat, paircov_prev, paircov_curr, logL  = self.E_step(y)
         
-        self.M_step(muhat, Vhat, paircov_prev, paircov_curr)
+        self.M_step(y, muhat, Vhat, paircov_prev, paircov_curr)
 
         # smoothed obs
-        smoothed_obs = params['C'] @ muhat
-        return smoothed_obs
+        smoothed_obs = self.C @ muhat
+        
+        return smoothed_obs, logL
     
     def fit(self, seq):
         
         self._validate_data(seq)
         
+        dellogL = np.nan
+        prev_logL = np.nan
+        logL_seq = np.zeros(self.niters)
+        
         for n in range(self.niters):
-            smoothed_obs = self.EM_iteration(seq)
+            smoothed_obs, logL = self.EM_iteration(seq)
+            dellogL = logL - prev_logL
+            prev_logL = logL
+            logL_seq[n] = logL
             
+            if self.verbose and n%self.log_every==0:
+                print('.....Iteration %d/%d, log likelihood = %.3f, delta logL = %.3f .....'%(n,self.niters,logL,dellogL))
+                
+        return smoothed_obs, logL_seq
