@@ -1,15 +1,18 @@
-from hmms.base.base_hmm import BaseHMM
+#from hmms.base.base_hmm import BaseHMM
+import numpy as np
+from kalman_filter_smoother import kalman_filter, kalman_backward, kalman_smoother
 
-from kalman_filter_smoother import *
 
-
-class LinearGaussianHMM(BaseHMM):
+class LinearGaussianHMM():
     """Linear Gaussian state space model
         .. math::
             x_{t+1} = Ax_t + Qv_t
             y_t = Cx_t + Rw_t
             v_t ~ \mathbf(N)(0, 1)
             w_t ~ \mathbf(N)(0, 1)
+        
+        ! Currently works only on one sequence at a time
+        
     """
     def __init__(self, nstates, ndims, init='random', stability_guarantee=False,
                 do_prior=False):
@@ -31,6 +34,10 @@ class LinearGaussianHMM(BaseHMM):
         self.smoothed_state_mu = None
         self.smoothed_state_var = None
         self.KalmanGain = None
+    
+    def _validate_data(self, y):
+        assert y.ndim == 2, 'Sequence has to be 2-D , if there is only one feature dimension, reshape with (1,-1)'
+        assert y.shape[1] > y.shape[0], 'Sequence length (second dimension, axis=1) needs to be longer than feature dimension axis 0'
         
     def _init_params_n4sid(self):
         """Initialize parameters with N4SID """
@@ -68,7 +75,7 @@ class LinearGaussianHMM(BaseHMM):
         if posterior_type == 'filter':
             mu, V, _, _, _ = kalman_filter(y, self.get_params())
             return mu, V
-        mu, V,_,_ kalman_smoother(y, self.get_params())
+        mu, V,_,_ = kalman_smoother(y, self.get_params())
         return mu, V
     
     def loglikelihood(self, y):
@@ -89,7 +96,7 @@ class LinearGaussianHMM(BaseHMM):
         self.V0 = 2*paircov_curr[0] - 2*np.outer(muhat[:,0],muhat[:,0]); # same for covariance
 
         # with prior
-        if self.do_prior
+        if self.do_prior:
             self.V0 = (self.V0 / (2*self.nstates + 2)) + np.eye(self.nstates)
 
         # now all other params
@@ -113,9 +120,8 @@ class LinearGaussianHMM(BaseHMM):
         # observation noise covariance
         Rnew = np.zeros((self.ndims, self.ndims))
         for t in range(T):
-            Rnew += np.outer(y[:,t], y[:,t]) - Cnew@np.outer(muhat[:,t], y[:,t]) 
-                - np.outer(y[:,t], muhat[:,t])@Cnew.T 
-                + Cnew@paircov_curr[t,:,:]@Cnew.T
+            Rnew += np.outer(y[:,t], y[:,t]) - Cnew@np.outer(muhat[:,t], y[:,t]) \
+                    - np.outer(y[:,t], muhat[:,t])@Cnew.T + Cnew@paircov_curr[t,:,:]@Cnew.T
         
         if self.do_prior:
             Rnew = Rnew / (T + 2*self.ndims + 2);
@@ -127,9 +133,7 @@ class LinearGaussianHMM(BaseHMM):
 
         Qnew = np.zeros((self.nstates, self.nstates))
         for t in range(1,T):
-            Qnew += paircov_curr[t,:,:] 
-                    - Anew@paircov_prev[t,:,:].T 
-                    - paircov_prev[t,:,:]@Anew.T 
+            Qnew += paircov_curr[t,:,:] - Anew@paircov_prev[t,:,:].T - paircov_prev[t,:,:]@Anew.T \
                     + Anew@paircov_curr[t-1,:,:]@Anew.T        
 
         if self.do_prior:
@@ -157,5 +161,12 @@ class LinearGaussianHMM(BaseHMM):
 
         # smoothed obs
         smoothed_obs = params['C'] @ muhat
+        return smoothed_obs
+    
+    def fit(self, seq):
         
+        self._validate_data(seq)
         
+        for n in range(self.niters):
+            smoothed_obs = self.EM_iteration(seq)
+            

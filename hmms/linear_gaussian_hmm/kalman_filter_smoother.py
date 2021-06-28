@@ -1,10 +1,10 @@
 import numpy as np
-import scipy.stats.multivariate_normal as mvn
+from scipy.stats import multivariate_normal as mvn
 import pdb
 
 
 
-def kalman_filter(x, params)
+def kalman_filter(x, params):
     ''' Kalman filtering algorithm
         Parameters
         ----------
